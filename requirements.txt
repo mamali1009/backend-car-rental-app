@@ -1,7 +1,9 @@
 flask
 boto3
+psycopg
+psycopg-binary
+psycopg2-binary
 langchain
 langchain-community
 langchain-aws
 langchain-postgres
-aws-lambda-wsgi
