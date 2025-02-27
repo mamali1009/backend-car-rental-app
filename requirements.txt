@@ -8,3 +8,4 @@ langchain
 langchain-community
 langchain-aws
 langchain-postgres
+aws-lambda-wsgi
