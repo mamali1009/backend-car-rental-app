@@ -105,6 +105,10 @@ def save_rental_data(data, username):
             return False
     return False
 
+@app.route('/')
+def index():
+    return "Hello from Flask on Lambda!"
+
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -544,8 +548,5 @@ def voice_chat():
             ]
         )
         print(f"Error: {str(e)}")
-        return jsonify({'success': False, 'message': str(e)}), 500
-        
-
 if __name__ == '__main__':
     app.run(debug=True)
