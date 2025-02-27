@@ -20,14 +20,19 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --platform manylinux2014_aarch64 --target ./package --python-version 3.12 --only-binary=:all: -r requirements.txt
+          pip install --platform manylinux2014_aarch64 --target ./python --python-version 3.12 --only-binary=:all: Flask boto3 langchain langchain-postgres langchain-aws langchain-community psycopg2-binary
 
-      - name: Package application
+      - name: Package layer
         run: |
-          cd package
-          zip -r ../function.zip .
-          cd ..
-          zip -g function.zip app.py others.py lambda_function.py
+          zip -r layer.zip python
+
+      - name: Publish layer
+        run: |
+          aws lambda publish-layer-version --layer-name flask-dependencies --description "Dependencies for Flask Lambda function" --zip-file fileb://layer.zip --compatible-runtimes python3.12
+
+      - name: Copy application files
+        run: |
+          cp -r ./* ./package/
 
   deploy:
     needs: build
@@ -44,4 +49,5 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           pip install awscli
+          cd package
           aws lambda update-function-code --function-name flask-lambda --zip-file fileb://function.zip
