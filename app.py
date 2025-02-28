@@ -105,10 +105,6 @@ def save_rental_data(data, username):
             return False
     return False
 
-@app.route('/')
-def index():
-    return "Hello from Flask on Lambda!"
-
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -430,123 +426,7 @@ def get_metrics():
     except Exception as e:
         print(f"Error fetching metrics: {str(e)}")
         return jsonify({'success': False, 'message': 'Error fetching metrics', 'error': str(e)}), 500
-@app.route('/rental/voice-chat', methods=['POST'])
-def voice_chat():
-    try:
-        # Get audio file from request
-        audio_file = request.files['audio']
-        username = request.form.get('username')
 
-        if not audio_file:
-            return jsonify({'success': False, 'message': 'Audio file is required'}), 400
 
-        if not username:
-            return jsonify({'success': False, 'message': 'Username is required'}), 400
-
-        # Initialize AWS clients
-        transcribe = boto3.client('transcribe', region_name='us-west-2')
-        s3 = boto3.client('s3')
-        cloudwatch = boto3.client('cloudwatch', region_name='us-west-2')
-        
-        start_time = datetime.now()
-
-        # Upload audio to S3
-        bucket = 'voice-recordings-for-car-rental'
-        audio_path = f'audio/{username}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
-        s3.upload_fileobj(audio_file, bucket, audio_path)
-
-        # Start transcription job
-        job_name = f'transcribe_{username}_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
-        transcribe.start_transcription_job(
-            TranscriptionJobName=job_name,
-            Media={'MediaFileUri': f's3://{bucket}/{audio_path}'},
-            MediaFormat='wav',
-            LanguageCode='en-US'
-        )
-
-        # Wait for transcription to complete
-        while True:
-            status = transcribe.get_transcription_job(TranscriptionJobName=job_name)
-            if status['TranscriptionJob']['TranscriptionJobStatus'] in ['COMPLETED', 'FAILED']:
-                break
-
-        if status['TranscriptionJob']['TranscriptionJobStatus'] == 'COMPLETED':
-            # Get transcribed text
-            transcript_uri = status['TranscriptionJob']['Transcript']['TranscriptFileUri']
-            transcript_response = requests.get(transcript_uri)
-            transcript_text = transcript_response.json()['results']['transcripts'][0]['transcript']
-
-            # Process transcribed text with Claude
-            bedrock = boto3.client(service_name='bedrock-runtime', region_name='us-west-2')
-            system_prompt = """You are a helpful car rental assistant. Extract rental information from the user's request and format it as JSON."""
-            claude_prompt = f"""Human: Extract and understand the following information from this car rental request, the age_verfication should return in 18+ or 25+ or 30+ or 45+ or 60+, the pickup_date and dropoff_date should return in YYYY-MM-DD format only, if the picup_location and dropoff_location has short form,spelling mistake then return with correct location, pickup_time and dropoff_time should return in Morning or Noon or Night based on request. Return only a JSON object with these fields:
-            pickup_location, pickup_date, pickup_time, drop_off_location, drop_off_date, drop_off_time, age_verification, 
-            country, no_of_adults, no_of_children, vehicle_type, preference
-            Request: {transcript_text}
-            Assistant: Here is the extracted information in JSON format:"""
-
-            body = json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "system": system_prompt,
-                "messages": [{"role": "user", "content": claude_prompt}],
-                "max_tokens": 1000,
-                "temperature": 0,
-                "top_p": 1
-            })
-
-            response = bedrock.invoke_model(
-                modelId='anthropic.claude-3-haiku-20240307-v1:0',
-                body=body
-            )
-
-            response_body = json.loads(response['body'].read())
-            extracted_data = json.loads(response_body['content'][0]['text'])
-            output = model.get_output(extracted_data)
-            extracted_data['output'] = output
-
-            # Calculate and log metrics
-            end_time = datetime.now()
-            latency = (end_time - start_time).total_seconds() * 1000
-
-            cloudwatch.put_metric_data(
-                Namespace='VoiceRentalMetrics',
-                MetricData=[
-                    {
-                        'MetricName': 'ProcessingLatency',
-                        'Value': latency,
-                        'Unit': 'Milliseconds'
-                    },
-                    {
-                        'MetricName': 'SuccessfulVoiceRequests',
-                        'Value': 1,
-                        'Unit': 'Count'
-                    }
-                ]
-            )
-
-            if save_rental_data(extracted_data, username):
-                print(f"Output: {output}") 
-                return jsonify({
-                    'success': True,
-                    'transcript': transcript_text,
-                    'output': output
-                })
-            return jsonify({'success': False, 'message': 'Failed to save rental data'}), 500
-
-        return jsonify({'success': False, 'message': 'Transcription failed'}), 500
-
-    except Exception as e:
-        # Log error metrics
-        cloudwatch.put_metric_data(
-            Namespace='VoiceRentalMetrics',
-            MetricData=[
-                {
-                    'MetricName': 'FailedVoiceRequests',
-                    'Value': 1,
-                    'Unit': 'Count'
-                }
-            ]
-        )
-        print(f"Error: {str(e)}")
 if __name__ == '__main__':
     app.run(debug=True)
