@@ -1,5 +1,7 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from datetime import datetime, timedelta
+import logging
 import psycopg2
 import boto3
 import requests
@@ -7,6 +9,7 @@ import json
 import main as model
 
 app = Flask(__name__)
+CORS(app)
 
 def get_db_connection():
     try:
@@ -149,25 +152,22 @@ def register():
         except Exception as e:
             return jsonify({'success': False, 'message': str(e)}), 500
     return jsonify({'success': False, 'message': 'Database connection failed'}), 500
-
 @app.route('/rental/chat', methods=['POST'])
 def rental_chat():
     data = request.get_json()
     prompt = data.get('prompt')
     username = data.get('username')
-    
     if not prompt:
         return jsonify({'success': False, 'message': 'Prompt is required'}), 400        
     try:
         # Initialize CloudWatch client
         cloudwatch = boto3.client('cloudwatch', region_name='us-west-2')
         start_time = datetime.now()
-        
         bedrock = boto3.client(service_name='bedrock-runtime', region_name='us-west-2')      
         system_prompt = """You are a helpful car rental assistant. Extract rental information from the user's request and format it as JSON."""     
         claude_prompt = f"""Human: Extract and understand the following information from this car rental request, the age_verfication should return in 18+ or 25+ or 30+ or 45+ or 60+, the pickup_date and dropoff_date should return in YYYY-MM-DD format only, if the picup_location and dropoff_location has short form,spelling mistake then return with correct location, pickup_time and dropoff_time should return in Morning or Noon or Night based on request. Return only a JSON object with these fields:
         pickup_location, pickup_date, pickup_time, drop_off_location, drop_off_date, drop_off_time, age_verification, 
-        country, no_of_adults, no_of_children, vehicle_type, preference
+        country, no_of_adults, no_of_children, vehicle_type, preference. If any details are missing, return null for those fields.
         Request: {prompt}
         Assistant: Here is the extracted information in JSON format:"""
         body = json.dumps({
@@ -175,7 +175,7 @@ def rental_chat():
             "system": system_prompt,
             "messages": [{"role": "user", "content": claude_prompt}],
             "max_tokens": 1000,
-            "temperature": 0,
+            "temperature": 0.7,
             "top_p": 1
         })
         response = bedrock.invoke_model(
@@ -184,55 +184,42 @@ def rental_chat():
         )        
         response_body = json.loads(response['body'].read())
         extracted_data = json.loads(response_body['content'][0]['text'])
+        # Ask for missing details
+        missing_fields = {key: "Required" for key, value in extracted_data.items() if value is None}
+        if missing_fields:
+            return jsonify({
+                'success': False,
+                'message': 'Additional information required',
+                'missing_fields': missing_fields
+            }), 400
+        # Process final input through Bedrock
         output = model.get_output(extracted_data)
         extracted_data['output'] = output
-        
         # Calculate latency
         end_time = datetime.now()
         latency = (end_time - start_time).total_seconds() * 1000  # Convert to milliseconds
-        
         # Log metrics to CloudWatch
         cloudwatch.put_metric_data(
             Namespace='BedrockMetrics',
             MetricData=[
-                {
-                    'MetricName': 'APILatency',
-                    'Value': latency,
-                    'Unit': 'Milliseconds'
-                },
-                {
-                    'MetricName': 'SuccessfulRequests',
-                    'Value': 1,
-                    'Unit': 'Count'
-                },
-                {
-                    'MetricName': 'TokensUsed',
-                    'Value': len(prompt.split()),
-                    'Unit': 'Count'
-                }
+                {'MetricName': 'APILatency', 'Value': latency, 'Unit': 'Milliseconds'},
+                {'MetricName': 'SuccessfulRequests', 'Value': 1, 'Unit': 'Count'},
+                {'MetricName': 'TokensUsed', 'Value': len(prompt.split()), 'Unit': 'Count'}
             ]
         )
-        
         if save_rental_data(extracted_data, username):
             print(f"Output: {output}")  # Log the output
             return jsonify({'success': True, 'output': output})
         return jsonify({'success': False, 'message': 'Failed to save rental data'}), 500
-        
     except Exception as e:
         # Log error metrics to CloudWatch
         cloudwatch.put_metric_data(
             Namespace='BedrockMetrics',
-            MetricData=[
-                {
-                    'MetricName': 'FailedRequests',
-                    'Value': 1,
-                    'Unit': 'Count'
-                }
-            ]
+            MetricData=[{'MetricName': 'FailedRequests', 'Value': 1, 'Unit': 'Count'}]
         )
         print(f"Error: {str(e)}")  # Log the error
         return jsonify({'success': False, 'message': str(e)}), 500
-    
+ 
 @app.route('/rental/form', methods=['POST'])
 def rental_form():
     data = request.get_json()
